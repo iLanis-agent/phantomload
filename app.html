@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PhantomLoad - audit</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:#141019; color:#f0eaf5; min-height:100vh; }
+  .wrap { max-width:760px; margin:0 auto; padding:28px 20px 80px; }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:22px; }
+  header h1 { font-size:22px; } header h1 span { color:#c084fc; }
+  header a { color:#9c8fb0; text-decoration:none; font-size:14px; }
+  .card { background:#1d1726; border:1px solid #34294a; border-radius:12px; padding:18px; margin-bottom:18px; }
+  label { font-size:12px; color:#9c8fb0; display:block; margin-bottom:4px; }
+  input, select { background:#141019; border:1px solid #433560; border-radius:8px; color:#f0eaf5; padding:8px 10px; font-size:14px; width:100%; }
+  button { background:#c084fc; border:none; color:#1a1020; font-weight:700; padding:10px 20px; border-radius:9px; font-size:14px; cursor:pointer; }
+  button:hover { filter:brightness(1.1); }
+  .row { display:grid; grid-template-columns:2fr 1fr 1fr 1fr auto; gap:10px; align-items:end; }
+  .dev { display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:center; padding:8px 0; border-bottom:1px solid #281f38; font-size:14px; }
+  .dev:last-child { border-bottom:none; }
+  .dev input[type=checkbox] { width:auto; }
+  .dev .meta { color:#9c8fb0; font-size:12px; }
+  .dev .hrs { width:64px; }
+  .res { display:flex; justify-content:space-between; align-items:baseline; padding:9px 0; border-bottom:1px solid #281f38; font-size:14px; }
+  .res:last-child { border-bottom:none; }
+  .res .cost { color:#c084fc; font-weight:700; font-variant-numeric:tabular-nums; }
+  .res .ph { color:#9c8fb0; font-size:12px; }
+  .bar { height:6px; background:#281f38; border-radius:3px; margin-top:4px; }
+  .bar i { display:block; height:6px; background:#c084fc; border-radius:3px; }
+  .stats { display:flex; gap:26px; flex-wrap:wrap; }
+  .stat b { font-size:24px; color:#fff; display:block; }
+  .stat span { font-size:12px; color:#9c8fb0; }
+  .err { color:#ff8a8a; font-size:13px; margin-top:8px; }
+  .price-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><h1>Phantom<span>Load</span></h1><a href="index.html">home</a></header>
+
+  <div class="card">
+    <div class="price-row">
+      <div><label>Electricity price ($ per kWh)</label><input id="price" type="number" step="0.01" value="0.15"></div>
+      <div><label>CO2 factor (kg per kWh, optional)</label><input id="co2" type="number" step="0.05" placeholder="0.40"></div>
+    </div>
+    <div id="lib"></div>
+    <label style="margin-top:14px">Add your own device</label>
+    <div class="row">
+      <div><label>Name</label><input id="cname" placeholder="Server rack"></div>
+      <div><label>Standby W</label><input id="cstandby" type="number" value="10"></div>
+      <div><label>Active W</label><input id="cactive" type="number" value="100"></div>
+      <div><label>Active h/day</label><input id="chrs" type="number" step="0.5" value="4"></div>
+      <button id="add">Add</button>
+    </div>
+    <div class="err" id="err"></div>
+  </div>
+
+  <div id="out"></div>
+</div>
+<script src="engine.js"></script>
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  let state = { selected: {}, custom: [], hours: {}, price: 0.15, co2: '' };
+  try {
+    const s = JSON.parse(localStorage.getItem('phantomload-state') || 'null');
+    if (s && s.selected) state = s;
+  } catch(e) {}
+  if (!Object.keys(state.selected).length) {
+    ['router','tv','console','desktop','chargers','speaker','cablebox','microwave'].forEach(id => state.selected[id] = true);
+  }
+
+  function save(){ localStorage.setItem('phantomload-state', JSON.stringify(state)); }
+  function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+  function renderLib(){
+    const rows = PhantomEngine.LIBRARY.map(d => {
+      const hrs = state.hours[d.id] !== undefined ? state.hours[d.id] : d.activeHrs;
+      return '<div class="dev"><input type="checkbox" data-id="'+d.id+'"'+(state.selected[d.id]?' checked':'')+'>'
+        + '<div><b>'+esc(d.name)+'</b> <span class="meta">standby '+d.standbyW+'W - active '+d.activeW+'W</span></div>'
+        + '<div class="meta">active <input class="hrs" type="number" step="0.5" min="0" max="24" data-hrs="'+d.id+'" value="'+hrs+'" style="width:58px;display:inline-block;padding:3px 6px"> h/d</div></div>';
+    });
+    const custom = state.custom.map((c, i) =>
+      '<div class="dev"><input type="checkbox" data-custom="'+i+'" checked>'
+      + '<div><b>'+esc(c.name)+'</b> <span class="meta">standby '+c.standbyW+'W - active '+c.activeW+'W - '+c.activeHrs+' h/d (custom)</span></div>'
+      + '<div class="meta"><a href="#" data-rm="'+i+'" style="color:#e060e0">remove</a></div></div>');
+    $('lib').innerHTML = rows.concat(custom).join('');
+    document.querySelectorAll('[data-id]').forEach(el => el.onchange = () => { state.selected[el.dataset.id] = el.checked; save(); render(); });
+    document.querySelectorAll('[data-hrs]').forEach(el => el.onchange = () => { state.hours[el.dataset.hrs] = Number(el.value); save(); render(); });
+    document.querySelectorAll('[data-custom]').forEach(el => el.onchange = () => { state.custom[+el.dataset.custom].off = !el.checked; save(); render(); });
+    document.querySelectorAll('[data-rm]').forEach(el => el.onclick = (ev) => { ev.preventDefault(); state.custom.splice(+el.dataset.rm, 1); save(); renderLib(); render(); });
+  }
+
+  $('add').onclick = () => {
+    $('err').textContent = '';
+    try {
+      const d = PhantomEngine.normDevice({ name:$('cname').value, standbyW:$('cstandby').value, activeW:$('cactive').value, activeHrs:$('chrs').value });
+      state.custom.push(d); save(); renderLib(); render();
+      $('cname').value = '';
+    } catch(e) { $('err').textContent = e.message; }
+  };
+
+  function render(){
+    state.price = Number($('price').value);
+    state.co2 = $('co2').value;
+    save();
+    const devices = PhantomEngine.LIBRARY
+      .filter(d => state.selected[d.id])
+      .map(d => ({ name:d.name, standbyW:d.standbyW, activeW:d.activeW,
+        activeHrs: state.hours[d.id] !== undefined ? state.hours[d.id] : d.activeHrs }))
+      .concat(state.custom.filter(c => !c.off));
+    let a;
+    try {
+      a = PhantomEngine.audit(devices, $('price').value, $('co2').value);
+    } catch(e) {
+      $('out').innerHTML = '<div class="card err">' + esc(e.message) + '</div>';
+      return;
+    }
+    if (!a.rows.length) { $('out').innerHTML = ''; return; }
+    const max = a.rows[0].annualCost;
+    let html = '<div class="card"><div class="stats">'
+      + '<div class="stat"><b>$' + a.total.annualCost.toFixed(0) + '</b><span>per year, all selected</span></div>'
+      + '<div class="stat"><b>$' + a.total.phantomCost.toFixed(0) + '</b><span>pure standby ("phantom")</span></div>'
+      + '<div class="stat"><b>' + Math.round(a.phantomShare * 100) + '%</b><span>of cost does nothing</span></div>'
+      + '<div class="stat"><b>' + Math.round(a.total.co2Kg) + ' kg</b><span>CO2 per year</span></div>'
+      + '</div></div>';
+    html += '<div class="card"><label>Ranked by annual cost</label>' + a.rows.map(r =>
+      '<div class="res"><div style="flex:1"><b>'+esc(r.name)+'</b><div class="bar"><i style="width:'+Math.max(2, Math.round(r.annualCost/max*100))+'%"></i></div></div>'
+      + '<div style="text-align:right"><span class="cost">$'+r.annualCost.toFixed(2)+'</span><div class="ph">$'+r.phantomCost.toFixed(2)+' standby</div></div></div>'
+    ).join('') + '</div>';
+    $('out').innerHTML = html;
+  }
+
+  $('price').oninput = render;
+  $('co2').oninput = render;
+  $('price').value = state.price || 0.15;
+  $('co2').value = state.co2 || '';
+  renderLib();
+  render();
+})();
+</script>
+</body>
+</html>
